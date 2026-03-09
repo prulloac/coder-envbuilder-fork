@@ -247,6 +247,7 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 	}
 	extracted := make(map[string]*extractedFeature, len(s.Features))
 	idToRef := make(map[string]string, len(s.Features)) // feature ID → refRaw
+	canonicalToRef := make(map[string]string, len(s.Features))
 	for featureRefRaw := range s.Features {
 		var (
 			featureRef string
@@ -294,9 +295,12 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 			opts:        featureOpts,
 		}
 		idToRef[spec.ID] = featureRefRaw
+		if _, exists := canonicalToRef[featureRef]; !exists {
+			canonicalToRef[featureRef] = featureRefRaw
+		}
 	}
 
-	// Resolve installation order, then validate hard dependencies.
+	// Validate hard dependencies first so ordering can assume presence.
 	refRaws := make([]string, 0, len(extracted))
 	for refRaw := range extracted {
 		refRaws = append(refRaws, refRaw)
@@ -305,11 +309,11 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 	for refRaw, ef := range extracted {
 		specsByRef[refRaw] = ef.spec
 	}
-	featureOrder, err := resolveInstallOrder(refRaws, specsByRef, idToRef, s.OverrideFeatureInstallOrder)
-	if err != nil {
+	if err := validateDependencies(specsByRef, idToRef, canonicalToRef); err != nil {
 		return "", nil, err
 	}
-	if err := validateDependencies(specsByRef, idToRef); err != nil {
+	featureOrder, err := resolveInstallOrder(refRaws, specsByRef, idToRef, canonicalToRef, s.OverrideFeatureInstallOrder)
+	if err != nil {
 		return "", nil, err
 	}
 
@@ -350,11 +354,11 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 //  3. Alphabetical — tie-breaking for determinism and layer cache stability
 //
 // IDs in installsAfter that don't map to a feature present in the set are
-// silently ignored (soft-dep semantics). Returns an error if a cycle is
-// detected among the installsAfter edges.
+// silently ignored (soft-dep semantics). Hard dependencies from dependsOn
+// are always enforced and may fail if override order violates them.
 //
 // See https://containers.dev/implementors/features/#installation-order
-func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idToRef map[string]string, overrideOrder []string) ([]string, error) {
+func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string, overrideOrder []string) ([]string, error) {
 	// Step 1: lock in override entries (in declared order), removing them
 	// from the free set so they are not subject to topo sorting.
 	free := make(map[string]bool, len(refRaws))
@@ -368,32 +372,69 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 			delete(free, r)
 		}
 	}
+	pinnedIndex := make(map[string]int, len(pinned))
+	for i, r := range pinned {
+		pinnedIndex[r] = i
+	}
+
+	// Hard dependencies must never be violated by overrides.
+	for _, r := range pinned {
+		for _, dep := range specs[r].DependsOn {
+			depRef, ok := resolveDependencyRef(dep, specs, idToRef, canonicalToRef)
+			if !ok {
+				// Presence validation runs before ordering.
+				continue
+			}
+			if depIdx, isPinned := pinnedIndex[depRef]; isPinned {
+				if depIdx > pinnedIndex[r] {
+					return nil, fmt.Errorf("overrideFeatureInstallOrder violates dependsOn: %q must be installed before %q", depRef, r)
+				}
+				continue
+			}
+			if free[depRef] {
+				return nil, fmt.Errorf("overrideFeatureInstallOrder violates dependsOn: %q must be installed before %q", depRef, r)
+			}
+		}
+	}
 
 	// Step 2: topological sort (Kahn's algorithm) on the free remainder,
-	// driven by installsAfter edges. An edge A→B means "B must come before A".
-	// Edges pointing outside the free set are ignored.
+	// driven by installsAfter and dependsOn edges. An edge A→B means
+	// "B must come before A".
+	// installsAfter edges pointing outside the free set are ignored.
 	inDegree := make(map[string]int, len(free))
 	deps := make(map[string][]string, len(free)) // refRaw → refRaws it must follow
 	for r := range free {
 		inDegree[r] = 0
 	}
 	for r := range free {
+		seenPred := make(map[string]struct{})
+		addPred := func(predRef string) {
+			if _, ok := seenPred[predRef]; ok {
+				return
+			}
+			seenPred[predRef] = struct{}{}
+			deps[r] = append(deps[r], predRef)
+			inDegree[r]++
+		}
+
+		for _, dep := range specs[r].DependsOn {
+			predRef, ok := resolveDependencyRef(dep, specs, idToRef, canonicalToRef)
+			if !ok || !free[predRef] {
+				// Missing dependencies are validated separately and pinned deps
+				// are already guaranteed to be before all free nodes.
+				continue
+			}
+			addPred(predRef)
+		}
+
 		for _, depID := range specs[r].InstallsAfter {
 			// Resolve the ID or ref to a refRaw present in the free set.
-			predRef, ok := idToRef[depID]
-			if !ok {
-				// depID might itself be a raw ref rather than a short ID.
-				if free[depID] {
-					predRef = depID
-					ok = true
-				}
-			}
+			predRef, ok := resolveDependencyRef(depID, specs, idToRef, canonicalToRef)
 			if !ok || !free[predRef] {
 				// Predecessor absent or overridden — soft dep, skip.
 				continue
 			}
-			deps[r] = append(deps[r], predRef)
-			inDegree[r]++
+			addPred(predRef)
 		}
 	}
 
@@ -444,21 +485,32 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 			}
 		}
 		sort.Strings(cycled)
-		return nil, fmt.Errorf("cycle detected in feature installsAfter dependencies: %s", strings.Join(cycled, ", "))
+		return nil, fmt.Errorf("cycle detected in feature dependency graph: %s", strings.Join(cycled, ", "))
 	}
 
 	return append(pinned, sorted...), nil
 }
 
+func resolveDependencyRef(dep string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string) (string, bool) {
+	if refRaw, ok := idToRef[dep]; ok {
+		return refRaw, true
+	}
+	if _, ok := specs[dep]; ok {
+		return dep, true
+	}
+	if refRaw, ok := canonicalToRef[dep]; ok {
+		return refRaw, true
+	}
+	return "", false
+}
+
 // validateDependencies checks that every hard dependency declared via
 // dependsOn in a feature's devcontainer-feature.json is satisfied by the
 // set of installed features.
-func validateDependencies(specs map[string]*features.Spec, idToRef map[string]string) error {
+func validateDependencies(specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string) error {
 	for refRaw, spec := range specs {
 		for _, depID := range spec.DependsOn {
-			_, byID := idToRef[depID]
-			_, byRef := specs[depID]
-			if !byID && !byRef {
+			if _, ok := resolveDependencyRef(depID, specs, idToRef, canonicalToRef); !ok {
 				return fmt.Errorf("feature %q (%s) requires feature %q which is not included", spec.ID, refRaw, depID)
 			}
 		}
