@@ -417,7 +417,7 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			DependsOn: []string{lateCanonical},
 		},
 	})
-	featureLateV1 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/late:1.0.0", features.TarLayerMediaType, map[string]any{
+	featureLateV1 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/zzz-late:1.0.0", features.TarLayerMediaType, map[string]any{
 		"install.sh": "hey",
 		"devcontainer-feature.json": features.Spec{
 			ID:      "late-v1",
@@ -425,7 +425,7 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			Name:    "LateV1",
 		},
 	})
-	featureLateV2 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/late:2.0.0", features.TarLayerMediaType, map[string]any{
+	featureLateV2 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/zzz-late:2.0.0", features.TarLayerMediaType, map[string]any{
 		"install.sh": "hey",
 		"devcontainer-feature.json": features.Spec{
 			ID:      "late-v2",

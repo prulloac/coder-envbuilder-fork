@@ -298,10 +298,7 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 		canonicalToRefs[featureRef] = append(canonicalToRefs[featureRef], featureRefRaw)
 	}
 
-	canonicalToRef, err := buildCanonicalToRef(canonicalToRefs)
-	if err != nil {
-		return "", nil, err
-	}
+	canonicalToRef, ambiguousCanonicals := buildCanonicalToRef(canonicalToRefs)
 
 	// Validate hard dependencies first so ordering can assume presence.
 	refRaws := make([]string, 0, len(extracted))
@@ -312,10 +309,10 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 	for refRaw, ef := range extracted {
 		specsByRef[refRaw] = ef.spec
 	}
-	if err := validateDependencies(specsByRef, idToRef, canonicalToRef); err != nil {
+	if err := validateDependencies(specsByRef, idToRef, canonicalToRef, ambiguousCanonicals); err != nil {
 		return "", nil, err
 	}
-	featureOrder, err := resolveInstallOrder(refRaws, specsByRef, idToRef, canonicalToRef, s.OverrideFeatureInstallOrder)
+	featureOrder, err := resolveInstallOrder(refRaws, specsByRef, idToRef, canonicalToRef, ambiguousCanonicals, s.OverrideFeatureInstallOrder)
 	if err != nil {
 		return "", nil, err
 	}
@@ -362,7 +359,7 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 // are always enforced and may fail if override order violates them.
 //
 // See https://containers.dev/implementors/features/#installation-order
-func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string, overrideOrder []string) ([]string, error) {
+func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string, ambiguousCanonicals map[string][]string, overrideOrder []string) ([]string, error) {
 	// Step 1: lock in override entries (in declared order), removing them
 	// from the free set so they are not subject to topo sorting.
 	free := make(map[string]bool, len(refRaws))
@@ -384,7 +381,10 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 	// Hard dependencies must never be violated by overrides.
 	for _, r := range pinned {
 		for _, dep := range specs[r].DependsOn {
-			depRef, ok := resolveDependencyRef(dep, specs, idToRef, canonicalToRef)
+			depRef, ok, err := resolveDependencyRef(dep, specs, idToRef, canonicalToRef, ambiguousCanonicals)
+			if err != nil {
+				return nil, err
+			}
 			if !ok {
 				// Presence validation runs before ordering.
 				continue
@@ -422,7 +422,10 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 		}
 
 		for _, dep := range specs[r].DependsOn {
-			predRef, ok := resolveDependencyRef(dep, specs, idToRef, canonicalToRef)
+			predRef, ok, err := resolveDependencyRef(dep, specs, idToRef, canonicalToRef, ambiguousCanonicals)
+			if err != nil {
+				return nil, err
+			}
 			if !ok || !free[predRef] {
 				// Missing dependencies are validated separately and pinned deps
 				// are already guaranteed to be before all free nodes.
@@ -433,7 +436,10 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 
 		for _, depID := range specs[r].InstallsAfter {
 			// Resolve the ID or ref to a refRaw present in the free set.
-			predRef, ok := resolveDependencyRef(depID, specs, idToRef, canonicalToRef)
+			predRef, ok, err := resolveDependencyRef(depID, specs, idToRef, canonicalToRef, ambiguousCanonicals)
+			if err != nil {
+				return nil, err
+			}
 			if !ok || !free[predRef] {
 				// Predecessor absent or overridden — soft dep, skip.
 				continue
@@ -495,38 +501,47 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 	return append(pinned, sorted...), nil
 }
 
-func resolveDependencyRef(dep string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string) (string, bool) {
+func resolveDependencyRef(dep string, specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string, ambiguousCanonicals map[string][]string) (string, bool, error) {
 	if refRaw, ok := idToRef[dep]; ok {
-		return refRaw, true
+		return refRaw, true, nil
 	}
 	if _, ok := specs[dep]; ok {
-		return dep, true
+		return dep, true, nil
 	}
 	if refRaw, ok := canonicalToRef[dep]; ok {
-		return refRaw, true
+		return refRaw, true, nil
 	}
-	return "", false
+	if refRaws, ok := ambiguousCanonicals[dep]; ok {
+		return "", false, fmt.Errorf("ambiguous canonical feature reference %q matches multiple configured features: %s", dep, strings.Join(refRaws, ", "))
+	}
+	return "", false, nil
 }
 
-func buildCanonicalToRef(canonicalToRefs map[string][]string) (map[string]string, error) {
+func buildCanonicalToRef(canonicalToRefs map[string][]string) (map[string]string, map[string][]string) {
 	canonicalToRef := make(map[string]string, len(canonicalToRefs))
+	ambiguous := make(map[string][]string)
 	for canonicalRef, refRaws := range canonicalToRefs {
 		sort.Strings(refRaws)
 		if len(refRaws) > 1 {
-			return nil, fmt.Errorf("ambiguous canonical feature reference %q matches multiple configured features: %s", canonicalRef, strings.Join(refRaws, ", "))
+			ambiguous[canonicalRef] = refRaws
+			continue
 		}
 		canonicalToRef[canonicalRef] = refRaws[0]
 	}
-	return canonicalToRef, nil
+	return canonicalToRef, ambiguous
 }
 
 // validateDependencies checks that every hard dependency declared via
 // dependsOn in a feature's devcontainer-feature.json is satisfied by the
 // set of installed features.
-func validateDependencies(specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string) error {
+func validateDependencies(specs map[string]*features.Spec, idToRef, canonicalToRef map[string]string, ambiguousCanonicals map[string][]string) error {
 	for refRaw, spec := range specs {
 		for _, depID := range spec.DependsOn {
-			if _, ok := resolveDependencyRef(depID, specs, idToRef, canonicalToRef); !ok {
+			_, ok, err := resolveDependencyRef(depID, specs, idToRef, canonicalToRef, ambiguousCanonicals)
+			if err != nil {
+				return err
+			}
+			if !ok {
 				return fmt.Errorf("feature %q (%s) requires feature %q which is not included", spec.ID, refRaw, depID)
 			}
 		}
