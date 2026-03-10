@@ -364,6 +364,8 @@ func TestCompileWithFeaturesInstallsAfter(t *testing.T) {
 
 		baseIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureBaseDir)
 		topIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureTopByRefDir)
+		require.Greater(t, baseIdx, -1, "base feature should be present")
+		require.Greater(t, topIdx, -1, "top-by-ref feature should be present")
 		require.Less(t, baseIdx, topIdx, "base should be installed before top-by-ref (installsAfter by canonical ref)")
 	})
 }
