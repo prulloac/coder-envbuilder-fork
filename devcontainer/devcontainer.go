@@ -300,6 +300,15 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 
 	canonicalToRef, ambiguousCanonicals := buildCanonicalToRef(canonicalToRefs)
 
+	// When build contexts are enabled, each canonical ref produces a Docker
+	// stage alias and context key. Duplicates would generate an invalid
+	// Dockerfile, so reject them early.
+	if useBuildContexts {
+		for canonical, refs := range ambiguousCanonicals {
+			return "", nil, fmt.Errorf("multiple configured features share canonical reference %q (%s); this produces duplicate build stages when build contexts are enabled", canonical, strings.Join(refs, ", "))
+		}
+	}
+
 	// Validate hard dependencies first so ordering can assume presence.
 	refRaws := make([]string, 0, len(extracted))
 	for refRaw := range extracted {

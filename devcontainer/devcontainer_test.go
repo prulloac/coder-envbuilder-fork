@@ -342,6 +342,8 @@ func TestCompileWithFeaturesInstallsAfter(t *testing.T) {
 
 		topIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureTopDir)
 		baseIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureBaseDir)
+		require.Greater(t, topIdx, -1, "top feature should be present")
+		require.Greater(t, baseIdx, -1, "base feature should be present")
 		require.Less(t, topIdx, baseIdx, "override should force top before base")
 	})
 
