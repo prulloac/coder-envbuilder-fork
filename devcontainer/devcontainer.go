@@ -247,7 +247,7 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 	}
 	extracted := make(map[string]*extractedFeature, len(s.Features))
 	idToRef := make(map[string]string, len(s.Features)) // feature ID → refRaw
-	canonicalToRef := make(map[string]string, len(s.Features))
+	canonicalToRefs := make(map[string][]string, len(s.Features))
 	for featureRefRaw := range s.Features {
 		var (
 			featureRef string
@@ -295,9 +295,12 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 			opts:        featureOpts,
 		}
 		idToRef[spec.ID] = featureRefRaw
-		if _, exists := canonicalToRef[featureRef]; !exists {
-			canonicalToRef[featureRef] = featureRefRaw
-		}
+		canonicalToRefs[featureRef] = append(canonicalToRefs[featureRef], featureRefRaw)
+	}
+
+	canonicalToRef, err := buildCanonicalToRef(canonicalToRefs)
+	if err != nil {
+		return "", nil, err
 	}
 
 	// Validate hard dependencies first so ordering can assume presence.
@@ -348,7 +351,8 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 // resolveInstallOrder determines the final feature installation order.
 //
 // Priority (highest to lowest):
-//  1. overrideOrder entries (in declared order) — user override wins unconditionally
+//  1. overrideOrder entries (in declared order), when compatible with
+//     dependsOn hard dependencies
 //  2. installsAfter edges from devcontainer-feature.json — soft ordering via
 //     Kahn's topological sort on the unconstrained remainder
 //  3. Alphabetical — tie-breaking for determinism and layer cache stability
@@ -502,6 +506,18 @@ func resolveDependencyRef(dep string, specs map[string]*features.Spec, idToRef, 
 		return refRaw, true
 	}
 	return "", false
+}
+
+func buildCanonicalToRef(canonicalToRefs map[string][]string) (map[string]string, error) {
+	canonicalToRef := make(map[string]string, len(canonicalToRefs))
+	for canonicalRef, refRaws := range canonicalToRefs {
+		sort.Strings(refRaws)
+		if len(refRaws) > 1 {
+			return nil, fmt.Errorf("ambiguous canonical feature reference %q matches multiple configured features: %s", canonicalRef, strings.Join(refRaws, ", "))
+		}
+		canonicalToRef[canonicalRef] = refRaws[0]
+	}
+	return canonicalToRef, nil
 }
 
 // validateDependencies checks that every hard dependency declared via

@@ -417,6 +417,22 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			DependsOn: []string{lateCanonical},
 		},
 	})
+	featureLateV1 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/late:1.0.0", features.TarLayerMediaType, map[string]any{
+		"install.sh": "hey",
+		"devcontainer-feature.json": features.Spec{
+			ID:      "late-v1",
+			Version: "1.0.0",
+			Name:    "LateV1",
+		},
+	})
+	featureLateV2 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/late:2.0.0", features.TarLayerMediaType, map[string]any{
+		"install.sh": "hey",
+		"devcontainer-feature.json": features.Spec{
+			ID:      "late-v2",
+			Version: "2.0.0",
+			Name:    "LateV2",
+		},
+	})
 
 	featureEarlyMD5 := md5.Sum([]byte(featureEarly))
 	featureEarlyDir := fmt.Sprintf("/.envbuilder/features/aaa-early-%x", featureEarlyMD5[:4])
@@ -508,6 +524,23 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 
 		_, err = dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
 		require.NoError(t, err)
+	})
+
+	t.Run("DependsOnCanonicalRefAmbiguousErrors", func(t *testing.T) {
+		raw := `{
+  "image": "localhost:5000/envbuilder-test-ubuntu:latest",
+  "features": {
+    "` + featureByRef + `": {},
+    "` + featureLateV1 + `": {},
+    "` + featureLateV2 + `": {}
+  }
+}`
+		dc, err := devcontainer.Parse([]byte(raw))
+		require.NoError(t, err)
+		fs := memfs.New()
+
+		_, err = dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
+		require.ErrorContains(t, err, "ambiguous canonical feature reference")
 	})
 }
 
