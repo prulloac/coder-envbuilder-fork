@@ -278,8 +278,8 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 		// devcontainers/cli has a very complex method of computing the feature
 		// name from the feature reference. We're just going to hash it for simplicity.
 		featureSha := md5.Sum([]byte(featureRefRaw))
-		featureName := filepath.Base(featureRef)
-		featureDir := filepath.Join(featuresDir, fmt.Sprintf("%s-%x", featureName, featureSha[:4]))
+		featureName := fmt.Sprintf("%s-%x", filepath.Base(featureRef), featureSha[:4])
+		featureDir := filepath.Join(featuresDir, featureName)
 		if err := fs.MkdirAll(featureDir, 0o644); err != nil {
 			return "", nil, err
 		}
