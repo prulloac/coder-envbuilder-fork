@@ -384,14 +384,16 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			Name:    "A",
 		},
 	})
-	// featureB hard-depends on featureA.
+	// featureB hard-depends on featureA. The dependsOn key uses the full OCI
+	// reference of featureA so that auto-add (DependsOnAutoAdded) can fetch it
+	// from the registry when it is not explicitly declared in features.
 	featureB := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/b:latest", features.TarLayerMediaType, map[string]any{
 		"install.sh": "hey",
 		"devcontainer-feature.json": features.Spec{
 			ID:        "b",
 			Version:   "1.0.0",
 			Name:      "B",
-			DependsOn: map[string]map[string]any{"a": {}},
+			DependsOn: map[string]map[string]any{featureA: {}},
 		},
 	})
 	featureEarly := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/aaa-early:latest", features.TarLayerMediaType, map[string]any{

@@ -319,27 +319,71 @@ func (s *Spec) compileFeatures(fs billy.Filesystem, devcontainerDir, scratchDir 
 		worklist = append(worklist, workItem{ref: featureRefRaw, opts: opts, fromDep: false})
 	}
 
-	// Process the worklist, adding transitive dependsOn entries as we go.
+	// Phase 1: extract all user-declared features. This populates idToRef and
+	// canonicalToRefs fully before we follow any dependsOn edges, so that dep
+	// refs expressed as feature IDs or canonical names can be resolved without
+	// trying to fetch them as bare OCI references.
 	for len(worklist) > 0 {
 		item := worklist[0]
 		worklist = worklist[1:]
 		if err := extractOne(item.ref, item.opts, item.fromDep); err != nil {
 			return "", nil, err
 		}
-		// Enqueue any dependsOn entries not yet seen.
-		ef := extracted[item.ref]
+	}
+
+	// Phase 2: follow dependsOn for every extracted feature and auto-add any
+	// transitive deps that are not yet in the install set.
+	//
+	// depCovered returns true when depRef already maps to an extracted feature,
+	// checked by exact key, by feature ID (via idToRef), or by canonical name
+	// (via canonicalToRefs — handles "host/repo" matching "host/repo:latest").
+	depCovered := func(depRef string) bool {
+		if _, ok := extracted[depRef]; ok {
+			return true
+		}
+		if ref, ok := idToRef[depRef]; ok {
+			if _, ok := extracted[ref]; ok {
+				return true
+			}
+		}
+		if refs, ok := canonicalToRefs[depRef]; ok && len(refs) > 0 {
+			return true
+		}
+		return false
+	}
+
+	// enqueueNewDeps adds any un-covered deps of ef to the worklist.
+	enqueueNewDeps := func(ef *extractedFeature) {
 		for depRef, depOpts := range ef.spec.DependsOn {
-			if _, already := extracted[depRef]; already {
+			if depCovered(depRef) {
 				continue
 			}
-			// Resolve depRef to a concrete refRaw if it's an ID or canonical.
-			// If not yet resolvable the dep is a new feature to fetch.
+			// Use the full ref from idToRef if this is a bare feature ID.
+			resolvedRef := depRef
+			if ref, ok := idToRef[depRef]; ok {
+				resolvedRef = ref
+			}
 			depOptsCopy := make(map[string]any, len(depOpts))
 			for k, v := range depOpts {
 				depOptsCopy[k] = v
 			}
-			worklist = append(worklist, workItem{ref: depRef, opts: depOptsCopy, fromDep: true})
+			worklist = append(worklist, workItem{ref: resolvedRef, opts: depOptsCopy, fromDep: true})
 		}
+	}
+
+	for _, ef := range extracted {
+		enqueueNewDeps(ef)
+	}
+	for len(worklist) > 0 {
+		item := worklist[0]
+		worklist = worklist[1:]
+		if _, already := extracted[item.ref]; already {
+			continue
+		}
+		if err := extractOne(item.ref, item.opts, item.fromDep); err != nil {
+			return "", nil, err
+		}
+		enqueueNewDeps(extracted[item.ref])
 	}
 
 	canonicalToRef, ambiguousCanonicals := buildCanonicalToRef(canonicalToRefs)
