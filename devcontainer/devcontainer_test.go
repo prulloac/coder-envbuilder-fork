@@ -391,7 +391,7 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			ID:        "b",
 			Version:   "1.0.0",
 			Name:      "B",
-			DependsOn: []string{"a"},
+			DependsOn: map[string]map[string]any{"a": {}},
 		},
 	})
 	featureEarly := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/aaa-early:latest", features.TarLayerMediaType, map[string]any{
@@ -400,7 +400,7 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			ID:        "early",
 			Version:   "1.0.0",
 			Name:      "Early",
-			DependsOn: []string{"late"},
+			DependsOn: map[string]map[string]any{"late": {}},
 		},
 	})
 	featureLate := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/zzz-late:latest", features.TarLayerMediaType, map[string]any{
@@ -420,7 +420,7 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 			ID:        "by-ref",
 			Version:   "1.0.0",
 			Name:      "ByRef",
-			DependsOn: []string{lateCanonical},
+			DependsOn: map[string]map[string]any{lateCanonical: {}},
 		},
 	})
 	featureLateV1 := registrytest.WriteContainer(t, registry, emptyRemoteOpts, "coder/zzz-late:1.0.0", features.TarLayerMediaType, map[string]any{
@@ -461,8 +461,10 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 		require.NoError(t, err)
 	})
 
-	t.Run("DependsOnMissingErrors", func(t *testing.T) {
-		// featureB requires featureA, but featureA is not included.
+	t.Run("DependsOnAutoAdded", func(t *testing.T) {
+		// featureB requires featureA, but featureA is not explicitly listed.
+		// Per spec, featureA should be automatically fetched and added to the
+		// install set.
 		raw := `{
   "image": "localhost:5000/envbuilder-test-ubuntu:latest",
   "features": {
@@ -473,8 +475,19 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 		require.NoError(t, err)
 		fs := memfs.New()
 
-		_, err = dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
-		require.ErrorContains(t, err, `requires feature "a"`)
+		params, err := dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
+		require.NoError(t, err)
+
+		// featureA (dep of featureB) must be present and installed before featureB.
+		featureAMD5 := md5.Sum([]byte(featureA))
+		featureADir := fmt.Sprintf("/.envbuilder/features/a-%x", featureAMD5[:4])
+		featureBMD5 := md5.Sum([]byte(featureB))
+		featureBDir := fmt.Sprintf("/.envbuilder/features/b-%x", featureBMD5[:4])
+		aIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureADir)
+		bIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureBDir)
+		require.Greater(t, aIdx, -1, "auto-added featureA should be present in Dockerfile")
+		require.Greater(t, bIdx, -1, "featureB should be present in Dockerfile")
+		require.Less(t, aIdx, bIdx, "featureA should be installed before featureB (dependsOn)")
 	})
 
 	t.Run("DependsOnEnforcesInstallOrder", func(t *testing.T) {
@@ -499,7 +512,10 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
 		require.Less(t, lateIdx, earlyIdx, "late should be installed before early due to dependsOn")
 	})
 
-	t.Run("OverrideViolatingDependsOnErrors", func(t *testing.T) {
+	t.Run("OverridePinnedFreeDependsOnSucceeds", func(t *testing.T) {
+		// featureEarly is pinned via overrideFeatureInstallOrder; it depends on
+		// featureLate which is in the free (topo-sorted) set. Per spec, the
+		// free set is installed before pinned features, so this is valid.
 		raw := `{
   "image": "localhost:5000/envbuilder-test-ubuntu:latest",
   "features": {
@@ -507,6 +523,32 @@ func TestCompileWithFeaturesDependsOn(t *testing.T) {
     "` + featureLate + `": {}
   },
   "overrideFeatureInstallOrder": ["` + featureEarly + `"]
+}`
+		dc, err := devcontainer.Parse([]byte(raw))
+		require.NoError(t, err)
+		fs := memfs.New()
+
+		params, err := dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
+		require.NoError(t, err)
+
+		// featureLate (free/topo) must appear before featureEarly (pinned).
+		earlyIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureEarlyDir)
+		lateIdx := strings.Index(params.DockerfileContent, "WORKDIR "+featureLateDir)
+		require.Greater(t, earlyIdx, -1, "early feature should be present")
+		require.Greater(t, lateIdx, -1, "late feature should be present")
+		require.Less(t, lateIdx, earlyIdx, "late (free) must be installed before early (pinned)")
+	})
+
+	t.Run("OverridePinnedBeforePinnedDepErrors", func(t *testing.T) {
+		// Both featureEarly and featureLate are pinned, but featureEarly
+		// (which depends on featureLate) is listed first — a true violation.
+		raw := `{
+  "image": "localhost:5000/envbuilder-test-ubuntu:latest",
+  "features": {
+    "` + featureEarly + `": {},
+    "` + featureLate + `": {}
+  },
+  "overrideFeatureInstallOrder": ["` + featureEarly + `", "` + featureLate + `"]
 }`
 		dc, err := devcontainer.Parse([]byte(raw))
 		require.NoError(t, err)
