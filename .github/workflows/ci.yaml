@@ -109,9 +109,9 @@ jobs:
             --arch=arm
 
       - name: Build and Push
-        if: github.ref == 'refs/heads/main'
+        if: github.ref == 'refs/heads/testing'
         run: |
-          BASE=ghcr.io/coder/envbuilder-preview
+          BASE=ghcr.io/prulloac/envbuilder-preview
 
           ./scripts/build.sh \
             --arch=amd64 \
