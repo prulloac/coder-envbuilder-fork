@@ -474,9 +474,11 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 	// Entry at index i gets priority (len - i) so earlier entries have higher
 	// priority.
 	roundPriority := make(map[string]int, len(overrideOrder))
+	pinnedSet := make(map[string]bool, len(overrideOrder))
 	for i, r := range overrideOrder {
 		if all[r] {
 			roundPriority[r] = len(overrideOrder) - i
+			pinnedSet[r] = true
 		}
 	}
 
@@ -509,6 +511,14 @@ func resolveInstallOrder(refRaws []string, specs map[string]*features.Spec, idTo
 				continue
 			}
 			addEdge(r, predRef)
+		}
+		// installsAfter is a soft dep: only respected when the feature is NOT
+		// in overrideFeatureInstallOrder. Pinned features have their install
+		// order dictated by the override list; their installsAfter hints are
+		// ignored per the spec ("soft dependencies are respected for Features
+		// not in overrideFeatureInstallOrder").
+		if pinnedSet[r] {
+			continue
 		}
 		for _, depID := range specs[r].InstallsAfter {
 			predRef, ok, err := resolveDependencyRef(depID, specs, idToRef, canonicalToRef, ambiguousCanonicals)

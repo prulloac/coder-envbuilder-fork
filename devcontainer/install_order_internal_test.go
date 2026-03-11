@@ -116,3 +116,41 @@ func TestResolveInstallOrderBothPinnedViolationErrors(t *testing.T) {
 	)
 	require.ErrorContains(t, err, "overrideFeatureInstallOrder violates dependsOn")
 }
+
+// TestResolveInstallOrderPinnedIgnoresInstallsAfter confirms that a pinned
+// feature's installsAfter hints are ignored: the override takes precedence
+// over soft dependencies per spec.
+func TestResolveInstallOrderPinnedIgnoresInstallsAfter(t *testing.T) {
+	t.Parallel()
+
+	// top declares installsAfter: ["base"], but top is pinned first in the
+	// override. The override should win; base must come AFTER top.
+	specs := map[string]*features.Spec{
+		"top:latest":  {ID: "top", Version: "1.0.0", Name: "Top", InstallsAfter: []string{"base"}},
+		"base:latest": {ID: "base", Version: "1.0.0", Name: "Base"},
+	}
+	idToRef := map[string]string{
+		"top":  "top:latest",
+		"base": "base:latest",
+	}
+
+	order, err := resolveInstallOrder(
+		[]string{"top:latest", "base:latest"},
+		specs, idToRef,
+		map[string]string{}, map[string][]string{},
+		[]string{"top:latest", "base:latest"}, // override: top first
+	)
+	require.NoError(t, err)
+	topIdx, baseIdx := -1, -1
+	for i, r := range order {
+		if r == "top:latest" {
+			topIdx = i
+		}
+		if r == "base:latest" {
+			baseIdx = i
+		}
+	}
+	require.Greater(t, topIdx, -1, "top should be in output")
+	require.Greater(t, baseIdx, -1, "base should be in output")
+	require.Less(t, topIdx, baseIdx, "override must place top before base despite installsAfter")
+}
