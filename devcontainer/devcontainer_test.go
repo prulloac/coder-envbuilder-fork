@@ -96,10 +96,10 @@ func TestCompileWithFeatures(t *testing.T) {
 
 	featureOneMD5 := md5.Sum([]byte(featureOne))
 	featureOneName := fmt.Sprintf("one-%x", featureOneMD5[:4])
-	featureOneDir := "/.envbuilder/features/" + featureOneName
+	featureOneDir := fmt.Sprintf("/.envbuilder/features/%s", featureOneName)
 	featureTwoMD5 := md5.Sum([]byte(featureTwo))
 	featureTwoName := fmt.Sprintf("two-%x", featureTwoMD5[:4])
-	featureTwoDir := "/.envbuilder/features/" + featureTwoName
+	featureTwoDir := fmt.Sprintf("/.envbuilder/features/%s", featureTwoName)
 
 	t.Run("WithoutBuildContexts", func(t *testing.T) {
 		params, err := dc.Compile(fs, "", workingDir, "", "", false, stubLookupEnv)
@@ -135,13 +135,13 @@ FROM localhost:5000/envbuilder-test-codercom-code-server:latest
 
 USER root
 # Rust tomato - Example description!
-WORKDIR /.envbuilder/features/`+featureOneName+`
+WORKDIR `+featureOneDir+`
 ENV TOMATO=example
-RUN --mount=type=bind,from=envbuilder_feature_`+featureOneName+`,target=/.envbuilder/features/`+featureOneName+`,rw _CONTAINER_USER="1000" _REMOTE_USER="1000" ./install.sh
+RUN --mount=type=bind,from=envbuilder_feature_`+featureOneName+`,target=`+featureOneDir+`,rw _CONTAINER_USER="1000" _REMOTE_USER="1000" ./install.sh
 # Go potato - Example description!
-WORKDIR /.envbuilder/features/`+featureTwoName+`
+WORKDIR `+featureTwoDir+`
 ENV POTATO=example
-RUN --mount=type=bind,from=envbuilder_feature_`+featureTwoName+`,target=/.envbuilder/features/`+featureTwoName+`,rw VERSION="potato" _CONTAINER_USER="1000" _REMOTE_USER="1000" ./install.sh
+RUN --mount=type=bind,from=envbuilder_feature_`+featureTwoName+`,target=`+featureTwoDir+`,rw VERSION="potato" _CONTAINER_USER="1000" _REMOTE_USER="1000" ./install.sh
 USER 1000`, params.DockerfileContent)
 
 		require.Equal(t, map[string]string{
@@ -180,11 +180,14 @@ func TestCompileWithFeaturesOverrideInstallOrder(t *testing.T) {
 	})
 
 	featureOneMD5 := md5.Sum([]byte(featureOne))
-	featureOneDir := fmt.Sprintf("/.envbuilder/features/one-%x", featureOneMD5[:4])
+	featureOneName := fmt.Sprintf("one-%x", featureOneMD5[:4])
+	featureOneDir := fmt.Sprintf("/.envbuilder/features/%s", featureOneName)
 	featureTwoMD5 := md5.Sum([]byte(featureTwo))
-	featureTwoDir := fmt.Sprintf("/.envbuilder/features/two-%x", featureTwoMD5[:4])
+	featureTwoName := fmt.Sprintf("two-%x", featureTwoMD5[:4])
+	featureTwoDir := fmt.Sprintf("/.envbuilder/features/%s", featureTwoName)
 	featureThreeMD5 := md5.Sum([]byte(featureThree))
-	featureThreeDir := fmt.Sprintf("/.envbuilder/features/three-%x", featureThreeMD5[:4])
+	featureThreeName := fmt.Sprintf("three-%x", featureThreeMD5[:4])
+	featureThreeDir := fmt.Sprintf("/.envbuilder/features/%s", featureThreeName)
 
 	t.Run("OverrideReverseOrder", func(t *testing.T) {
 		// featureThree then featureTwo are explicitly ordered first; featureOne
